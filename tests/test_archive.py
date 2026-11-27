@@ -124,6 +124,48 @@ class GeminiFallbackTest(unittest.TestCase):
         self.assertEqual(used, "c")
         self.assertEqual(len(kept), 1)
 
+    def test_skips_model_same_as_failed_alias(self):
+        page = namu.parse_page(SAMPLE, "x")
+        item = {"section": "성격", "text": "침착하다.", "summary": "침착함", "quote": "차갑고 침착한 성격의 검사이다"}
+        today = dt.date(2026, 11, 28)
+        aliases = gemini.AliasCache(today=today)
+        aliases.data["lite-latest"] = {"model": "lite-3.5", "seen": "2026-11-27"}
+        client = FailingClient([item], fail=["lite-latest"])
+        skipped = []
+        _, _, used = gemini.summarize(page, "t", model="lite-latest, lite-3.5, lite-3.1", client=client,
+                                      aliases=aliases, on_skip=lambda m, t: skipped.append((m, t)))
+        self.assertEqual(client.tried, ["lite-latest", "lite-3.1"])  # lite-3.5는 같은 모델이라 건너뜀
+        self.assertEqual(skipped, [("lite-3.5", "lite-3.5")])
+        self.assertEqual(used, "lite-3.1")
+
+    def test_alias_expires_and_is_learned(self):
+        today = dt.date(2026, 11, 28)
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "aliases.json"
+            cache = gemini.AliasCache(path, today)
+            cache.learn("flash-latest", "models/flash-3.8")
+            cache.learn("flash-3.8", "flash-3.8")  # 별칭이 아니면 기록하지 않음
+            again = gemini.AliasCache(path, today)  # 파일에서 다시 읽기
+            self.assertEqual(again.target("flash-latest"), "flash-3.8")
+            self.assertNotIn("flash-3.8", again.data)
+            later = gemini.AliasCache(path, today + dt.timedelta(days=gemini.ALIAS_TTL_DAYS + 1))
+            self.assertEqual(later.target("flash-latest"), "flash-latest")  # 오래되면 다시 확인
+
+    def test_used_model_is_actual_version(self):
+        page = namu.parse_page(SAMPLE, "x")
+        item = {"section": "성격", "text": "침착하다.", "summary": "침착함", "quote": "차갑고 침착한 성격의 검사이다"}
+
+        class VersionClient(FakeClient):
+            def generate_content(self, model, contents, config):
+                r = super().generate_content(model, contents, config)
+                r.model_version = "real-model"
+                return r
+
+        aliases = gemini.AliasCache(today=dt.date(2026, 11, 28))
+        _, _, used = gemini.summarize(page, "t", model="some-latest", client=VersionClient([item]), aliases=aliases)
+        self.assertEqual(used, "real-model")
+        self.assertEqual(aliases.target("some-latest"), "real-model")
+
     def test_all_fail(self):
         page = namu.parse_page(SAMPLE, "x")
         client = FailingClient([], fail=["a", "b"])

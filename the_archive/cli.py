@@ -49,7 +49,12 @@ def run_one(name: str, args, work, out: Path, today: dt.date) -> bool:
             def report(model_name, err):
                 print(f"[알림] {name}: {model_name} 실패 → 다음 모델 시도 ({err[:60]})", file=sys.stderr)
 
-            facts, dropped, model = gemini.summarize(page, name, model=args.model, on_fail=report)
+            def skipped(model_name, target):
+                print(f"[알림] {name}: {model_name} 건너뜀 (실패한 별칭과 같은 모델 {target})", file=sys.stderr)
+
+            aliases = gemini.AliasCache(Path(args.cache).parent / "gemini_aliases.json", today)
+            facts, dropped, model = gemini.summarize(page, name, model=args.model, on_fail=report,
+                                                     on_skip=skipped, aliases=aliases)
             char.facts = facts
             char.author = [f"Gemini ({model})"]
             if dropped:
