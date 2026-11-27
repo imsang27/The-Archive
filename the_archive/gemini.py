@@ -6,9 +6,11 @@ API 키는 환경 변수 GEMINI_API_KEY(또는 GOOGLE_API_KEY)에서 읽는다.
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 import re
+from pathlib import Path
 
 from .model import SECTIONS, Fact, Page
 
@@ -117,7 +119,53 @@ def validate(items: list[dict], page: Page, limit: int) -> tuple[list[Fact], lis
     return kept, dropped
 
 
-def _call(client, model: str, contents: str, types) -> list[dict]:
+ALIAS_TTL_DAYS = 7  # 별칭이 가리키는 모델은 Google이 바꿀 수 있으므로 이 기간이 지나면 다시 확인한다
+
+
+def _bare(name: str | None) -> str:
+    return (name or "").strip().removeprefix("models/")
+
+
+class AliasCache:
+    """"gemini-flash-lite-latest → gemini-3.5-flash-lite"처럼 별칭이 실제로 가리킨 모델을 기억한다.
+
+    성공한 응답의 model_version으로 배우고, 파일(JSON)에 저장해 다음 실행에서도 쓴다.
+    """
+
+    def __init__(self, path: Path | None = None, today: dt.date | None = None):
+        self.path = path
+        self.today = today or dt.date.today()
+        self.data: dict[str, dict] = {}
+        if path is not None and path.is_file():
+            try:
+                self.data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                self.data = {}
+
+    def target(self, model: str) -> str:
+        """알고 있는 실제 모델 이름. 모르거나 오래됐으면 이름 그대로."""
+        entry = self.data.get(model)
+        if not entry:
+            return model
+        try:
+            seen = dt.date.fromisoformat(entry.get("seen", ""))
+        except ValueError:
+            return model
+        if (self.today - seen).days > ALIAS_TTL_DAYS:
+            return model
+        return entry.get("model") or model
+
+    def learn(self, model: str, actual: str | None) -> None:
+        actual = _bare(actual)
+        if not actual or actual == model:
+            return
+        self.data[model] = {"model": actual, "seen": self.today.isoformat()}
+        if self.path is not None:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _call(client, model: str, contents: str, types) -> tuple[list[dict], str | None]:
     resp = client.models.generate_content(
         model=model,
         contents=contents,
@@ -134,7 +182,7 @@ def _call(client, model: str, contents: str, types) -> list[dict]:
         raise GeminiError(f"응답을 JSON으로 읽지 못했습니다: {exc}") from exc
     if not isinstance(items, list):
         raise GeminiError("응답이 목록 형식이 아닙니다")
-    return items
+    return items, getattr(resp, "model_version", None)
 
 
 def _short(exc: Exception) -> str:
@@ -142,12 +190,16 @@ def _short(exc: Exception) -> str:
 
 
 def summarize(page: Page, name: str, model: str | None = None, limit: int = 4,
-              client=None, on_fail=None) -> tuple[list[Fact], list[dict], str]:
+              client=None, on_fail=None, on_skip=None,
+              aliases: AliasCache | None = None) -> tuple[list[Fact], list[dict], str]:
     """(남긴 줄, 버린 항목, 실제로 쓴 모델)을 돌려준다.
 
     model에 "a, b, c"처럼 여러 모델을 적으면 앞에서부터 시도하고,
     한도 초과(429)·없는 모델(404) 같은 오류가 나면 다음 모델로 넘어간다.
+    별칭(예: gemini-flash-lite-latest)이 실패했고 그 별칭이 가리키는 모델이 목록 뒤에 또 있으면,
+    같은 모델이라 결과가 같으므로 건너뛰고 그다음 모델로 내려간다.
     """
+    aliases = aliases or AliasCache()
     candidates = model_candidates(model)
     source = build_source(page)
     if not source:
@@ -162,14 +214,22 @@ def summarize(page: Page, name: str, model: str | None = None, limit: int = 4,
 
     contents = PROMPT.format(title=page.title, name=name, source=source, limit=limit)
     errors = []
+    failed: set[str] = set()  # 실패한 실제 모델 이름
     for m in candidates:
+        target = aliases.target(m)
+        if target in failed:
+            if on_skip is not None:
+                on_skip(m, target)
+            continue
         try:
-            items = _call(client, m, contents, types)
+            items, actual = _call(client, m, contents, types)
         except Exception as exc:  # API 오류(429, 404 등)나 응답 형식 오류 → 다음 모델
             errors.append(f"{m}: {_short(exc)}")
+            failed.update({m, target})
             if on_fail is not None:
                 on_fail(m, _short(exc))
             continue
+        aliases.learn(m, actual)
         kept, dropped = validate(items, page, limit)
-        return kept, dropped, m
+        return kept, dropped, _bare(actual) or m
     raise GeminiError("모든 모델이 실패했습니다 - " + " / ".join(errors))

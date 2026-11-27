@@ -112,7 +112,7 @@ python -m the_archive 파수인 --work 명조 --json
 | `--work`, `-w` | 작품: 블루 아카이브, 원신, 스타레일, 명조, 니케 (`블아`, `WW` 같은 줄임말도 됨) |
 | `--out`, `-o` | 노트를 저장할 폴더 (예: Obsidian 볼트의 캐릭터 폴더) |
 | `--llm gemini` | Gemini로 요약. 키가 없거나 실패하면 규칙 기반으로 진행 |
-| `--model` | Gemini 모델 (기본: `GEMINI_MODEL` 값, 없으면 `gemini-flash-latest`). 쉼표로 여러 개를 적으면 앞에서부터 시도하고, 한도 초과(429)·과부하(503) 등으로 실패하면 다음 모델로 넘어갑니다 |
+| `--model` | Gemini 모델 (기본: `GEMINI_MODEL` 값, 없으면 `gemini-flash-latest`). 쉼표로 여러 개를 적으면 앞에서부터 시도하고, 한도 초과(429)·과부하(503) 등으로 실패하면 다음 모델로 넘어갑니다. `-latest` 별칭이 실패하면 그 별칭이 가리키는 모델은 건너뜁니다 (별칭 정보는 `.cache/gemini_aliases.json`에 7일간 기억) |
 | `--overwrite` | 같은 이름의 노트를 덮어쓰기 (기본은 건너뜀) |
 | `--refresh` | `.cache/namu`의 캐시를 무시하고 다시 받기 |
 
