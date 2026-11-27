@@ -16,10 +16,26 @@ DEFAULT_MODEL = "gemini-flash-latest"
 
 
 def default_model() -> str:
-    """환경 변수(.env 포함) GEMINI_MODEL이 있으면 그 값을 쓴다."""
+    """환경 변수(.env 포함) GEMINI_MODEL이 있으면 그 값을 쓴다. 쉼표로 여러 개를 적을 수 있다."""
     return os.environ.get("GEMINI_MODEL") or DEFAULT_MODEL
-SOURCE_SECTIONS = ("개요", "인물 소개", "공식 소개", "정보", "캐릭터성", "여담", "디자인")
-MAX_SOURCE_CHARS = 15000
+
+
+def model_candidates(model: str | None = None) -> list[str]:
+    """"a, b, c" 형식을 시도할 순서대로 나눈다. 비어 있으면 기본 모델 하나."""
+    names = [m.strip() for m in (model or default_model()).split(",")]
+    out: list[str] = []
+    for n in names:
+        if n and n not in out:
+            out.append(n)
+    return out or [DEFAULT_MODEL]
+
+
+# 앞에 둔 섹션일수록 잘리지 않는다. 섹션마다 MAX_SECTION_CHARS까지만 넣는다.
+SOURCE_SECTIONS = ("개요", "인물 소개", "공식 소개", "정보", "여담", "기타", "외모", "디자인", "캐릭터성")
+MAX_SECTION_CHARS = 8000
+MAX_SOURCE_CHARS = 40000
+# "정보" 섹션에서 이 줄부터는 캐릭터 스토리(소설 같은 서술)라서 뺀다
+STORY_MARKERS = ("캐릭터 스토리", "[ 캐릭터 스토리")
 
 PROMPT = """너는 캐릭터 기록을 정리하는 아키비스트다. 아래 [출처]는 나무위키 문서 "{title}"의 일부다.
 캐릭터 "{name}"의 성격, 외형, 기타 특징을 한국어로 정리하라.
@@ -31,6 +47,9 @@ PROMPT = """너는 캐릭터 기록을 정리하는 아키비스트다. 아래 [
 - summary는 대조 체크리스트용 15자 안팎의 짧은 요약이다.
 - quote는 그 문장의 근거가 되는 [출처] 원문을 한 글자도 바꾸지 않고 그대로 옮긴 조각이다.
   8~60자, 각주 번호([1] 등)와 따옴표가 들어간 부분은 피한다.
+- "외형"에는 머리카락, 눈, 체형, 복장, 장신구, 성흔처럼 눈에 보이는 모습만 넣는다.
+  성격이나 행동을 말하는 문장은 외형이 아니다.
+- "{name}" 본인에 대한 서술만 쓴다. 다른 인물을 묘사하는 문장이나 대사는 쓰지 않는다.
 - 줄거리 스포일러, 게임 성능·수치, 밈은 넣지 않는다.
 
 [출처]
@@ -56,12 +75,21 @@ class GeminiError(RuntimeError):
     pass
 
 
+def _section_text(name: str, lines: list[str]) -> str:
+    if name == "정보":
+        cut = next((i for i, l in enumerate(lines) if l.strip().startswith(STORY_MARKERS)), len(lines))
+        lines = lines[:cut]
+    return "\n".join(lines)[:MAX_SECTION_CHARS]
+
+
 def build_source(page: Page) -> str:
     parts = []
     for name in SOURCE_SECTIONS:
         lines = page.sections.get(name)
         if lines:
-            parts.append(f"## {name}\n" + "\n".join(lines))
+            text = _section_text(name, lines)
+            if text.strip():
+                parts.append(f"## {name}\n{text}")
     return "\n\n".join(parts)[:MAX_SOURCE_CHARS]
 
 
@@ -89,9 +117,38 @@ def validate(items: list[dict], page: Page, limit: int) -> tuple[list[Fact], lis
     return kept, dropped
 
 
+def _call(client, model: str, contents: str, types) -> list[dict]:
+    resp = client.models.generate_content(
+        model=model,
+        contents=contents,
+        config=types.GenerateContentConfig(
+            temperature=0.2,
+            response_mime_type="application/json",
+            response_json_schema=SCHEMA,
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+        ),
+    )
+    try:
+        items = json.loads(resp.text)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise GeminiError(f"응답을 JSON으로 읽지 못했습니다: {exc}") from exc
+    if not isinstance(items, list):
+        raise GeminiError("응답이 목록 형식이 아닙니다")
+    return items
+
+
+def _short(exc: Exception) -> str:
+    return " ".join(str(exc).split())[:120]
+
+
 def summarize(page: Page, name: str, model: str | None = None, limit: int = 4,
-              client=None) -> tuple[list[Fact], list[dict]]:
-    model = model or default_model()
+              client=None, on_fail=None) -> tuple[list[Fact], list[dict], str]:
+    """(남긴 줄, 버린 항목, 실제로 쓴 모델)을 돌려준다.
+
+    model에 "a, b, c"처럼 여러 모델을 적으면 앞에서부터 시도하고,
+    한도 초과(429)·없는 모델(404) 같은 오류가 나면 다음 모델로 넘어간다.
+    """
+    candidates = model_candidates(model)
     source = build_source(page)
     if not source:
         raise GeminiError("요약할 본문을 찾지 못했습니다")
@@ -103,19 +160,16 @@ def summarize(page: Page, name: str, model: str | None = None, limit: int = 4,
         client = genai.Client()
     from google.genai import types
 
-    resp = client.models.generate_content(
-        model=model,
-        contents=PROMPT.format(title=page.title, name=name, source=source, limit=limit),
-        config=types.GenerateContentConfig(
-            temperature=0.2,
-            response_mime_type="application/json",
-            response_json_schema=SCHEMA,
-        ),
-    )
-    try:
-        items = json.loads(resp.text)
-    except (TypeError, json.JSONDecodeError) as exc:
-        raise GeminiError(f"응답을 JSON으로 읽지 못했습니다: {exc}") from exc
-    if not isinstance(items, list):
-        raise GeminiError("응답이 목록 형식이 아닙니다")
-    return validate(items, page, limit)
+    contents = PROMPT.format(title=page.title, name=name, source=source, limit=limit)
+    errors = []
+    for m in candidates:
+        try:
+            items = _call(client, m, contents, types)
+        except Exception as exc:  # API 오류(429, 404 등)나 응답 형식 오류 → 다음 모델
+            errors.append(f"{m}: {_short(exc)}")
+            if on_fail is not None:
+                on_fail(m, _short(exc))
+            continue
+        kept, dropped = validate(items, page, limit)
+        return kept, dropped, m
+    raise GeminiError("모든 모델이 실패했습니다 - " + " / ".join(errors))

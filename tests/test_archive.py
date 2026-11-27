@@ -88,10 +88,49 @@ class GeminiTest(unittest.TestCase):
             {"section": "외형", "text": "금발이다.", "summary": "금발", "quote": "머리카락은 금발이다"},
             {"section": "잘못", "text": "x", "summary": "x", "quote": "북쪽 마을에서 왔다"},
         ])
-        kept, dropped = gemini.summarize(page, "테스트캐릭터", client=client)
+        kept, dropped, used = gemini.summarize(page, "테스트캐릭터", model="m1", client=client)
+        self.assertEqual(used, "m1")
         self.assertEqual([f.section for f in kept], ["성격"])
         self.assertEqual(len(dropped), 2)
         self.assertIn("[출처]", client.prompt)
+
+
+class FailingClient(FakeClient):
+    """앞 모델들은 실패하고 마지막 모델만 성공하는 가짜 클라이언트."""
+
+    def __init__(self, items, fail):
+        super().__init__(items)
+        self.fail = set(fail)
+        self.tried = []
+
+    def generate_content(self, model, contents, config):
+        self.tried.append(model)
+        if model in self.fail:
+            raise RuntimeError("429 RESOURCE_EXHAUSTED")
+        return super().generate_content(model, contents, config)
+
+
+class GeminiFallbackTest(unittest.TestCase):
+    def test_candidates(self):
+        self.assertEqual(gemini.model_candidates(" a, b ,a,, c "), ["a", "b", "c"])
+        self.assertEqual(gemini.model_candidates(","), [gemini.DEFAULT_MODEL])
+
+    def test_falls_back_in_order(self):
+        page = namu.parse_page(SAMPLE, "x")
+        item = {"section": "성격", "text": "침착하다.", "summary": "침착함", "quote": "차갑고 침착한 성격의 검사이다"}
+        client = FailingClient([item], fail=["a", "b"])
+        kept, _, used = gemini.summarize(page, "t", model="a, b, c", client=client)
+        self.assertEqual(client.tried, ["a", "b", "c"])
+        self.assertEqual(used, "c")
+        self.assertEqual(len(kept), 1)
+
+    def test_all_fail(self):
+        page = namu.parse_page(SAMPLE, "x")
+        client = FailingClient([], fail=["a", "b"])
+        with self.assertRaises(gemini.GeminiError) as ctx:
+            gemini.summarize(page, "t", model="a,b", client=client)
+        self.assertIn("a:", str(ctx.exception))
+        self.assertIn("b:", str(ctx.exception))
 
 
 class RenderTest(unittest.TestCase):

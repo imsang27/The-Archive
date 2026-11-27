@@ -26,7 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out", "-o", default="archive", help="노트를 저장할 폴더 (기본: archive)")
     p.add_argument("--llm", choices=["none", "gemini"], default="none",
                    help="성격·외형 요약에 쓸 AI (기본: none = 규칙 기반)")
-    p.add_argument("--model", help=f"Gemini 모델 이름 (기본: GEMINI_MODEL 또는 {gemini.DEFAULT_MODEL})")
+    p.add_argument("--model", help=f"Gemini 모델. 쉼표로 여러 개를 적으면 실패 시 다음 모델로 넘어감 (기본: GEMINI_MODEL 또는 {gemini.DEFAULT_MODEL})")
     p.add_argument("--json", action="store_true", help="JSON 파일도 함께 저장")
     p.add_argument("--overwrite", action="store_true", help="같은 이름의 노트가 있으면 덮어쓰기")
     p.add_argument("--dry-run", action="store_true", help="저장하지 않고 화면에 출력")
@@ -46,8 +46,10 @@ def run_one(name: str, args, work, out: Path, today: dt.date) -> bool:
     char = Character(name=name, work=work.title, page=page)
     if args.llm == "gemini":
         try:
-            model = args.model or gemini.default_model()
-            facts, dropped = gemini.summarize(page, name, model=model)
+            def report(model_name, err):
+                print(f"[알림] {name}: {model_name} 실패 → 다음 모델 시도 ({err[:60]})", file=sys.stderr)
+
+            facts, dropped, model = gemini.summarize(page, name, model=args.model, on_fail=report)
             char.facts = facts
             char.author = [f"Gemini ({model})"]
             if dropped:
