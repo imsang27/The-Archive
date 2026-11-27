@@ -99,8 +99,7 @@ pip install -r requirements.txt
 # 규칙 기반: 나무위키 문장을 그대로 골라 노트를 만듭니다 (AI 없음, 무료)
 python -m the_archive 설지 장리 --work 명조 --out archive
 
-# Gemini 요약: 성격·외형·기타 특징을 한 문장씩 정리합니다
-set GEMINI_API_KEY=발급받은_키        # PowerShell: $env:GEMINI_API_KEY="발급받은_키"
+# Gemini 요약: 성격·외형·기타 특징을 한 문장씩 정리합니다 (API 키 설정은 아래 참고)
 python -m the_archive "타카나시 호시노" --work 블루아카이브 --llm gemini
 
 # 저장하지 않고 미리 보기, JSON도 함께 저장
@@ -113,9 +112,19 @@ python -m the_archive 파수인 --work 명조 --json
 | `--work`, `-w` | 작품: 블루 아카이브, 원신, 스타레일, 명조, 니케 (`블아`, `WW` 같은 줄임말도 됨) |
 | `--out`, `-o` | 노트를 저장할 폴더 (예: Obsidian 볼트의 캐릭터 폴더) |
 | `--llm gemini` | Gemini로 요약. 키가 없거나 실패하면 규칙 기반으로 진행 |
-| `--model` | Gemini 모델 (기본: `gemini-flash-latest`, 환경 변수 `GEMINI_MODEL`로도 지정) |
+| `--model` | Gemini 모델 (기본: `GEMINI_MODEL` 값, 없으면 `gemini-flash-latest`) |
 | `--overwrite` | 같은 이름의 노트를 덮어쓰기 (기본은 건너뜀) |
 | `--refresh` | `.cache/namu`의 캐시를 무시하고 다시 받기 |
+
+### 🔑 Gemini API 키 설정
+
+[Google AI Studio](https://aistudio.google.com/apikey)에서 키를 발급한 뒤, 둘 중 하나로 넣습니다.
+
+1. **`.env` 파일 (이 저장소에서만 사용)**: `.env.example`을 `.env`로 복사하고 `GEMINI_API_KEY=` 뒤에 키를 적습니다.
+   `.env`는 `.gitignore`에 있어 커밋되지 않습니다. 실행한 폴더의 `.env`를 먼저, 그다음 저장소 폴더의 `.env`를 읽습니다.
+2. **사용자 환경 변수 (모든 프로그램에서 사용)**: Windows의 "계정의 환경 변수 편집"에서 `GEMINI_API_KEY`를 추가합니다.
+
+둘 다 있으면 **환경 변수가 우선**합니다. 키를 코드나 노트에 직접 적지 마세요.
 
 ---
 
@@ -130,9 +139,11 @@ The-Archive/
 │   ├── gemini.py         # Gemini 요약 + 인용 검증
 │   ├── render.py         # Obsidian 노트(Markdown) 만들기
 │   ├── works.py          # 작품별 설정 (문서 이름 규칙, 태그, 링크)
+│   ├── dotenv.py         # .env 파일 읽기 (외부 패키지 없음)
 │   └── model.py          # 자료 구조
 ├── tests/                # 단위 테스트 (python -m unittest discover -s tests)
 ├── docs/                 # PRD, TODO
+├── .env.example          # API 키 설정 예시 (.env로 복사해서 사용)
 └── README.md
 ```
 

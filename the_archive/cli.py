@@ -13,7 +13,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import gemini, namu, rules
+from . import dotenv, gemini, namu, rules
 from .model import Character
 from .render import render
 from .works import WORKS, get_work
@@ -26,7 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out", "-o", default="archive", help="노트를 저장할 폴더 (기본: archive)")
     p.add_argument("--llm", choices=["none", "gemini"], default="none",
                    help="성격·외형 요약에 쓸 AI (기본: none = 규칙 기반)")
-    p.add_argument("--model", default=gemini.DEFAULT_MODEL, help="Gemini 모델 이름")
+    p.add_argument("--model", help=f"Gemini 모델 이름 (기본: GEMINI_MODEL 또는 {gemini.DEFAULT_MODEL})")
     p.add_argument("--json", action="store_true", help="JSON 파일도 함께 저장")
     p.add_argument("--overwrite", action="store_true", help="같은 이름의 노트가 있으면 덮어쓰기")
     p.add_argument("--dry-run", action="store_true", help="저장하지 않고 화면에 출력")
@@ -46,9 +46,10 @@ def run_one(name: str, args, work, out: Path, today: dt.date) -> bool:
     char = Character(name=name, work=work.title, page=page)
     if args.llm == "gemini":
         try:
-            facts, dropped = gemini.summarize(page, name, model=args.model)
+            model = args.model or gemini.default_model()
+            facts, dropped = gemini.summarize(page, name, model=model)
             char.facts = facts
-            char.author = [f"Gemini ({args.model})"]
+            char.author = [f"Gemini ({model})"]
             if dropped:
                 print(f"[알림] {name}: 인용을 원문에서 찾지 못한 {len(dropped)}줄을 버렸습니다", file=sys.stderr)
         except Exception as exc:  # API 오류, 키 없음, 응답 형식 오류
@@ -78,6 +79,7 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.reconfigure(encoding="utf-8")
         sys.stderr.reconfigure(encoding="utf-8")
     args = build_parser().parse_args(argv)
+    dotenv.load()  # .env의 GEMINI_API_KEY 등을 읽는다 (이미 있는 환경 변수가 우선)
     try:
         work = get_work(args.work)
     except KeyError as exc:

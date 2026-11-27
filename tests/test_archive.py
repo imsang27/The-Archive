@@ -2,7 +2,10 @@ import datetime as dt
 import json
 import unittest
 
-from the_archive import gemini, namu, rules
+import tempfile
+from pathlib import Path
+
+from the_archive import dotenv, gemini, namu, rules
 from the_archive.model import Character
 from the_archive.render import recency_score, render
 from the_archive.works import get_work
@@ -129,6 +132,39 @@ class WorksTest(unittest.TestCase):
         self.assertEqual(get_work("WW").key, "명조")
         with self.assertRaises(KeyError):
             get_work("없는 작품")
+
+
+class DotenvTest(unittest.TestCase):
+    def test_parse(self):
+        text = "\n".join([
+            "# 주석",
+            "GEMINI_API_KEY=abc123",
+            'export GEMINI_MODEL="gemini-x"  ',
+            "A=1 # 끝 주석",
+            "BAD LINE",
+            "EMPTY=",
+        ])
+        self.assertEqual(dotenv.parse(text),
+                         {"GEMINI_API_KEY": "abc123", "GEMINI_MODEL": "gemini-x", "A": "1", "EMPTY": ""})
+
+    def test_load_does_not_override(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / ".env"
+            path.write_text("GEMINI_API_KEY=from-file\nGEMINI_MODEL=m-file\nEMPTY=\n", encoding="utf-8")
+            env = {"GEMINI_API_KEY": "from-system"}
+            loaded = dotenv.load([path, Path(d) / "missing.env"], env)
+            self.assertEqual(env["GEMINI_API_KEY"], "from-system")  # 시스템 값이 우선
+            self.assertEqual(env["GEMINI_MODEL"], "m-file")
+            self.assertNotIn("EMPTY", env)
+            self.assertEqual(loaded, ["GEMINI_MODEL"])
+
+    def test_bom(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / ".env"
+            path.write_bytes("﻿GEMINI_API_KEY=k\n".encode("utf-8"))  # 메모장이 붙이는 BOM
+            env = {}
+            dotenv.load([path], env)
+            self.assertEqual(env, {"GEMINI_API_KEY": "k"})
 
 
 if __name__ == "__main__":

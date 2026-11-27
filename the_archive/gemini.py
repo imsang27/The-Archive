@@ -12,7 +12,12 @@ import re
 
 from .model import SECTIONS, Fact, Page
 
-DEFAULT_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
+DEFAULT_MODEL = "gemini-flash-latest"
+
+
+def default_model() -> str:
+    """환경 변수(.env 포함) GEMINI_MODEL이 있으면 그 값을 쓴다."""
+    return os.environ.get("GEMINI_MODEL") or DEFAULT_MODEL
 SOURCE_SECTIONS = ("개요", "인물 소개", "공식 소개", "정보", "캐릭터성", "여담", "디자인")
 MAX_SOURCE_CHARS = 15000
 
@@ -84,8 +89,9 @@ def validate(items: list[dict], page: Page, limit: int) -> tuple[list[Fact], lis
     return kept, dropped
 
 
-def summarize(page: Page, name: str, model: str = DEFAULT_MODEL, limit: int = 4,
+def summarize(page: Page, name: str, model: str | None = None, limit: int = 4,
               client=None) -> tuple[list[Fact], list[dict]]:
+    model = model or default_model()
     source = build_source(page)
     if not source:
         raise GeminiError("요약할 본문을 찾지 못했습니다")
