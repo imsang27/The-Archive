@@ -52,10 +52,10 @@
 
 | 구성 | 기술 |
 |------|------|
-| 백엔드 | Python (FastAPI / Flask) |
+| 백엔드 | Python 3.10+ (CLI) |
 | 프론트엔드 | Streamlit (MVP) → React (확장 시) |
-| 크롤링 | requests, BeautifulSoup, Wikipedia API, Google Custom Search API |
-| 요약 | OpenAI GPT, Claude API, 또는 로컬 모델 |
+| 크롤링 | requests (나무위키) |
+| 요약 | 규칙 기반, Gemini API (google-genai) |
 | 저장 | Markdown + 태그 기반 파일 시스템, Json |
 | 검색 | 키워드 매칭, 태그 인덱싱, keyword index (Whoosh / SQLite / ElasticSearch 등 선택) |
 
@@ -90,18 +90,32 @@
 
 ---
 
-## 🏛️ 사용 예시 (예정)
+## 🏛️ 사용 예시
 
 ```bash
-# 캐릭터 특징 자동 수집
-$ python fetch_character.py --name "Lacus Clyne"
+# 설치 (Gemini 요약을 쓸 때만 google-genai가 필요합니다)
+pip install -r requirements.txt
 
-# 태그 기반 검색
-$ python search.py --trait "pacifist"
+# 규칙 기반: 나무위키 문장을 그대로 골라 노트를 만듭니다 (AI 없음, 무료)
+python -m the_archive 설지 장리 --work 명조 --out archive
 
-# 정제된 프로필 출력
-$ cat archive/Lacus_Clyne.md
+# Gemini 요약: 성격·외형·기타 특징을 한 문장씩 정리합니다
+set GEMINI_API_KEY=발급받은_키        # PowerShell: $env:GEMINI_API_KEY="발급받은_키"
+python -m the_archive "타카나시 호시노" --work 블루아카이브 --llm gemini
+
+# 저장하지 않고 미리 보기, JSON도 함께 저장
+python -m the_archive 파수인 --work 명조 --dry-run
+python -m the_archive 파수인 --work 명조 --json
 ```
+
+| 옵션 | 설명 |
+| :-- | :-- |
+| `--work`, `-w` | 작품: 블루 아카이브, 원신, 스타레일, 명조, 니케 (`블아`, `WW` 같은 줄임말도 됨) |
+| `--out`, `-o` | 노트를 저장할 폴더 (예: Obsidian 볼트의 캐릭터 폴더) |
+| `--llm gemini` | Gemini로 요약. 키가 없거나 실패하면 규칙 기반으로 진행 |
+| `--model` | Gemini 모델 (기본: `gemini-flash-latest`, 환경 변수 `GEMINI_MODEL`로도 지정) |
+| `--overwrite` | 같은 이름의 노트를 덮어쓰기 (기본은 건너뜀) |
+| `--refresh` | `.cache/namu`의 캐시를 무시하고 다시 받기 |
 
 ---
 
@@ -109,24 +123,34 @@ $ cat archive/Lacus_Clyne.md
 
 ```
 The-Archive/
-├── archive/              # 저장된 캐릭터 기록들 (Markdown)
-├── fetcher/              # 정보 수집 및 전처리 모듈
-├── traits/               # 특징 / 개성 분류 기준
-├── interface/            # CLI 또는 GUI 인터페이스
-├── utils/                # 유틸리티 및 도우미 함수들
-└── README.md             # 프로젝트 소개 문서
+├── the_archive/
+│   ├── cli.py            # 명령줄 인터페이스
+│   ├── namu.py           # 나무위키 문서 수집, 프로필·섹션 파싱, 캐시
+│   ├── rules.py          # 규칙 기반 추출 (출처 문장을 그대로 사용)
+│   ├── gemini.py         # Gemini 요약 + 인용 검증
+│   ├── render.py         # Obsidian 노트(Markdown) 만들기
+│   ├── works.py          # 작품별 설정 (문서 이름 규칙, 태그, 링크)
+│   └── model.py          # 자료 구조
+├── tests/                # 단위 테스트 (python -m unittest discover -s tests)
+├── docs/                 # PRD, TODO
+└── README.md
 ```
 
 ---
 
-## 📌 사용 방법 (예정)
+## 📌 동작 방식
 
-1. 캐릭터 이름을 입력합니다.
-2. 자동으로 정보를 수집하고 요약합니다.
-3. 편집기에서 내용을 확인하고 수정합니다.
-4. Markdown 또는 JSON 파일로 저장합니다.
+1. **수집**: `이름(작품 구분자)` 문서를 먼저 찾고, 없으면 `이름` 문서를 찾습니다. 받은 HTML은 `.cache/namu`에 저장해 같은 문서를 다시 요청하지 않습니다. 요청 사이에는 1초씩 쉽니다.
+2. **파싱**: 프로필(성별·생일·소속 등), 원어 이름, 성우, 섹션(개요·여담 등), 최근 수정 날짜를 뽑습니다.
+3. **정리**
+   - 규칙 기반: 성격·외형 키워드가 들어간 문장을 **원문 그대로** 고릅니다.
+   - Gemini: 출처에 있는 내용만 쓰도록 지시하고, 줄마다 원문 인용을 받습니다. **인용이 원문에 실제로 없으면 그 줄을 버립니다.**
+4. **저장**: Obsidian 볼트 규칙에 맞춘 노트를 만듭니다.
+   - 프론트메터(별칭, 태그, 출처, `Source_date`, 신뢰도), 기본 정보 표, 성격·외형·기타 특징
+   - 줄마다 원문 인용이 붙은 **대조 체크리스트** (사람이 출처와 대조한 뒤 체크)
+   - 신뢰도 계산 주석 (출처가 위키 하나이므로 대조 전에는 최대 40점)
 
-> 추후 CLI/GUI 버전과 특징 기반 검색도 추가될 예정입니다.
+> 노트는 초안입니다. 대조 체크리스트로 출처와 맞는지 확인한 뒤 쓰세요.
 
 ---
 
@@ -141,10 +165,10 @@ The-Archive/
 ## 📎 프로젝트 상태
 
 ### 🔹1단계: 기본 기능 (MVP)
-- [ ] 캐릭터 이름 입력 UI 구현 (CLI / Streamlit)
-- [ ] 위키 기반 크롤러 구현 (나무위키, Wikipedia)
-- [ ] 텍스트 정리/요약 기능 구현 (OpenAI API 연동)
-- [ ] Markdown 템플릿 설계 및 저장 기능
+- [x] 캐릭터 이름 입력 UI 구현 (CLI)
+- [x] 위키 기반 크롤러 구현 (나무위키)
+- [x] 텍스트 정리/요약 기능 구현 (규칙 기반 + Gemini API)
+- [x] Markdown 템플릿 설계 및 저장 기능
 - [ ] 사용자 검토 기능 (텍스트 창 or 간단한 웹 UI)
 
 ### 🔹2단계: 특징 기반 검색
@@ -160,8 +184,8 @@ The-Archive/
 - [ ] 캐릭터 이미지 자동 수집 및 포함 (선택 기능)
 
 ### 🔹4단계: 기술적 안정화
-- [ ] 예외 처리 및 네트워크 오류 대응
-- [ ] 캐시 또는 중복 처리 로직
+- [x] 예외 처리 및 네트워크 오류 대응
+- [x] 캐시 또는 중복 처리 로직
 - [ ] 저장된 데이터 재활용 (기록 검색/수정)
 
 ### 🔹5단계: 배포 및 고도화
