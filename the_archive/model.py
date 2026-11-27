@@ -19,6 +19,16 @@ class Fact:
 
 
 @dataclass
+class Trait:
+    """프론트메터 특징 속성 하나 (예: 머리: 은발). 값마다 출처 원문 인용이 있다."""
+
+    key: str  # 머리, 눈, 성격
+    value: str
+    quote: str
+    source: int = 0
+
+
+@dataclass
 class Source:
     """노트의 근거가 되는 출처 하나 (나무위키, 공식 라운지 DB, 영문 위키 등)."""
 
@@ -57,6 +67,8 @@ class Character:
     tags: list[str] = field(default_factory=list)
     author: list[str] = field(default_factory=list)  # 내용을 쓴 AI 모델 (규칙 기반만 썼으면 비움)
     sources: list[Source] = field(default_factory=list)  # [0]은 항상 나무위키
+    traits: list[Trait] = field(default_factory=list)  # 프론트메터 특징 속성 (머리·눈·성격)
+    full_name: str = ""  # 출처에서 확인한 풀네임 (예: 쿠치바 치사)
 
     def to_json(self) -> dict:
         data = asdict(self)

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 
 from .model import SECTIONS, Character, Source
 from .namu import to_source
@@ -39,11 +40,44 @@ def _q(s: str) -> str:
     return json.dumps(s, ensure_ascii=False)
 
 
+TRAIT_KEYS = ("머리", "눈", "성격")
+
+
+def trait_properties(traits) -> list[str]:
+    """머리·눈은 값 하나, 성격은 목록. 근거가 없으면 키만 남긴다."""
+    out = []
+    for key in TRAIT_KEYS:
+        values = [t.value for t in traits if t.key == key]
+        if key == "성격":
+            out.append(_yaml_list(key, values))
+        else:
+            out.append(f"{key}: {values[0]}" if values else f"{key}:")
+    return out
+
+
+CJK = re.compile(r"[\u3040-\u30ff\u4e00-\u9fff]")
+
+
+def aliases(char: Character) -> list[str]:
+    """[풀네임 또는 한국어 약칭, 원어, 영문] 순서."""
+    out: list[str] = []
+    names = char.page.names
+    # "성 이름" 형식(로마자 이름도 두 단어)일 때만 이름 부분을 약칭으로 쓴다. 예: 스나오오카미 시로코 → 시로코
+    latin = names[-1] if names else ""
+    family = " " in char.name and len(latin.split()) == len(char.name.split()) == 2
+    korean = char.full_name or (char.name.split()[-1] if family else "")
+    for n in ([korean] if korean and korean != char.name else []) + names[:1] + names[-1:]:
+        n = n.replace(" ", "") if CJK.search(n) else n  # 한자·가나 이름은 띄어쓰기를 없앤다
+        if n and n not in out:
+            out.append(n)
+    return out
+
+
 def choose_core(sources: list[Source], facts) -> int:
     """Rules.md의 핵심 출처 기준: (1) 원출처(1차) → (2) 가장 많은 줄을 받치는 출처 → (3) 날짜가 있는 출처."""
     counts = {i: 0 for i in range(len(sources))}
     counts[0] += 1  # 나무위키는 기본 정보 표를 받친다
-    for f in facts:
+    for f in facts:  # 본문 줄과 특징 속성 모두 (둘 다 .source가 있다)
         counts[f.source] = counts.get(f.source, 0) + 1
     used = [i for i, c in counts.items() if c > 0]
     return min(used, key=lambda i: (sources[i].grade, -counts[i], 0 if sources[i].date else 1, i))
@@ -53,8 +87,8 @@ def render(char: Character, work: Work, today: dt.date | None = None) -> str:
     today = today or dt.date.today()
     page = char.page
     sources = char.sources or [to_source(page)]
-    used = sorted({0} | {f.source for f in char.facts})
-    core = choose_core(sources, char.facts)
+    used = sorted({0} | {f.source for f in char.facts} | {t.source for t in char.traits})
+    core = choose_core(sources, list(char.facts) + list(char.traits))
     order = [core] + [i for i in used if i != core]
     fn = {src: n for n, src in enumerate(order, 1)}  # 출처 번호 → 각주 번호
     core_src = sources[core]
@@ -74,7 +108,7 @@ def render(char: Character, work: Work, today: dt.date | None = None) -> str:
         "Date_of_creation: <% tp.file.creation_date('YYYY-MM-DD ddd HH:mm:ss') %>",
         "Last_modified:",
         "  - <% tp.file.last_modified_date('YYYY-MM-DD ddd HH:mm:ss') %>",
-        _yaml_list("aliases", page.names),
+        _yaml_list("aliases", aliases(char)),
         _yaml_list("tags", [work.tag] + char.tags),
         "Reference:",
         *[f"  - {_q(ref(i))}" for i in order],
@@ -88,10 +122,13 @@ def render(char: Character, work: Work, today: dt.date | None = None) -> str:
     ]
     if has_ai:
         fm += ["Review_status: 미검토", "Reviewed_date:"]
-    fm += [f"작품: {_q(work.link)}", "취향:", "---"]
+    fm += [f"작품: {_q(work.link)}", "취향:"]
+    fm += trait_properties(char.traits)
+    fm += ["---"]
 
     nf = f"[^{fn[0]}]"  # 기본 정보 표는 나무위키가 받친다
-    rows = [f"| 이름 | {char.name}" + (f" ({', '.join(page.names)})" if page.names else "") + f"{nf} |",
+    shown = ([char.full_name] if char.full_name else []) + [n for n in aliases(char) if n != char.full_name]
+    rows = [f"| 이름 | {char.name}" + (f" ({', '.join(shown)})" if shown else "") + f"{nf} |",
             f"| 작품 | {work.title}{nf} |"]
     for key in PROFILE_ORDER:
         if page.profile.get(key):
@@ -114,6 +151,8 @@ def render(char: Character, work: Work, today: dt.date | None = None) -> str:
                        if f"{k}: {page.profile[k]}" in page.text), None)
         quote = f'"{anchor}"' if anchor else f"검색어: {page.profile[profile_keys[-1]]}"
         checks.append(f"> - [ ] {tag(0)} {'·'.join(profile_keys[:6])} (1.){nf} — {quote}")
+    for t in sorted(char.traits, key=lambda t: t.source != core):
+        checks.append(f'> - [ ] {tag(t.source)} {t.key}: {t.value} (속성)[^{fn[t.source]}] — "{t.quote}"')
     facts = sorted(char.facts, key=lambda f: f.source != core)  # 핵심 줄을 먼저
     for f in facts:
         checks.append(f'> - [ ] {tag(f.source)} {f.summary} ({SECTION_NUM[f.section]})[^{fn[f.source]}] — "{f.quote}"')

@@ -13,7 +13,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import bawiki, dotenv, gemini, namu, rules
+from . import bawiki, dotenv, gemini, namu, rules, traits
 from .naver_db import NaverDBError, NaverLoungeDB
 from .model import Character
 from .render import render
@@ -36,6 +36,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--today", help="신뢰도 R 계산 기준 날짜 (YYYY-MM-DD)")
     p.add_argument("--no-extra", action="store_true",
                    help="나무위키만 쓰기 (네이버 라운지 DB, Blue Archive Wiki를 쓰지 않음)")
+    p.add_argument("--full-name", action="append", default=[], metavar="이름=풀네임",
+                   help="출처에서 확인한 풀네임 (여러 번 쓸 수 있음). 예: --full-name 치사=쿠치바치사")
     p.add_argument("--no-browser", action="store_true",
                    help="브라우저(Playwright)가 필요한 출처(네이버 라운지 DB)를 쓰지 않음")
     return p
@@ -74,17 +76,18 @@ def run_one(name: str, args, work, out: Path, today: dt.date, lounge_db=None) ->
         print(f"[실패] {name}: {exc}", file=sys.stderr)
         return False
 
-    char = Character(name=name, work=work.title, page=page)
+    full = dict(x.split("=", 1) for x in args.full_name if "=" in x)
+    char = Character(name=name, work=work.title, page=page, full_name=full.get(name, ""))
     char.sources = [namu.to_source(page)] + collect_extra(name, page, args, work, lounge_db)
     if args.llm == "gemini":
+        def report(model_name, err):
+            print(f"[알림] {name}: {model_name} 실패 → 다음 모델 시도 ({err[:60]})", file=sys.stderr)
+
+        def skipped(model_name, target):
+            print(f"[알림] {name}: {model_name} 건너뜀 (실패한 별칭과 같은 모델 {target})", file=sys.stderr)
+
+        aliases = gemini.AliasCache(Path(args.cache).parent / "gemini_aliases.json", today)
         try:
-            def report(model_name, err):
-                print(f"[알림] {name}: {model_name} 실패 → 다음 모델 시도 ({err[:60]})", file=sys.stderr)
-
-            def skipped(model_name, target):
-                print(f"[알림] {name}: {model_name} 건너뜀 (실패한 별칭과 같은 모델 {target})", file=sys.stderr)
-
-            aliases = gemini.AliasCache(Path(args.cache).parent / "gemini_aliases.json", today)
             facts, dropped, model = gemini.summarize(char.sources, name, model=args.model, on_fail=report,
                                                      on_skip=skipped, aliases=aliases)
             char.facts = facts
@@ -93,6 +96,15 @@ def run_one(name: str, args, work, out: Path, today: dt.date, lounge_db=None) ->
                 print(f"[알림] {name}: 인용을 원문에서 찾지 못한 {len(dropped)}줄을 버렸습니다", file=sys.stderr)
         except Exception as exc:  # API 오류, 키 없음, 응답 형식 오류
             print(f"[알림] {name}: Gemini 요약 실패 → 규칙 기반으로 진행 ({exc})", file=sys.stderr)
+        try:  # 특징 속성(머리·눈·성격). 실패해도 노트는 만든다
+            char.traits, tdropped, tmodel = traits.extract(char.sources, name, model=args.model, on_fail=report,
+                                                           on_skip=skipped, aliases=aliases)
+            if tdropped:
+                print(f"[알림] {name}: 근거를 찾지 못한 특징 {len(tdropped)}개를 버렸습니다", file=sys.stderr)
+            if char.traits and f"Gemini ({tmodel})" not in char.author:
+                char.author.append(f"Gemini ({tmodel})")
+        except Exception as exc:
+            print(f"[알림] {name}: 특징 속성 추출 실패 ({exc})", file=sys.stderr)
     if not char.facts:
         char.facts = rules.extract(page)
         official = []
