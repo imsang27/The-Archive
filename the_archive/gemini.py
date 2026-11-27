@@ -203,24 +203,24 @@ class AliasCache:
             self.path.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _call(client, model: str, contents: str, types) -> tuple[list[dict], str | None]:
+def _call(client, model: str, contents: str, types, schema=None, expect=list):
     resp = client.models.generate_content(
         model=model,
         contents=contents,
         config=types.GenerateContentConfig(
             temperature=0.2,
             response_mime_type="application/json",
-            response_json_schema=SCHEMA,
+            response_json_schema=schema or SCHEMA,
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         ),
     )
     try:
-        items = json.loads(resp.text)
+        data = json.loads(resp.text)
     except (TypeError, json.JSONDecodeError) as exc:
         raise GeminiError(f"응답을 JSON으로 읽지 못했습니다: {exc}") from exc
-    if not isinstance(items, list):
-        raise GeminiError("응답이 목록 형식이 아닙니다")
-    return items, getattr(resp, "model_version", None)
+    if not isinstance(data, expect):
+        raise GeminiError(f"응답 형식이 {expect.__name__}가 아닙니다")
+    return data, getattr(resp, "model_version", None)
 
 
 def _short(exc: Exception) -> str:
@@ -237,11 +237,21 @@ def summarize(page, name: str, model: str | None = None, limit: int = 4,
     별칭(예: gemini-flash-lite-latest)이 실패했고 그 별칭이 가리키는 모델이 목록 뒤에 또 있으면,
     같은 모델이라 결과가 같으므로 건너뛰고 그다음 모델로 내려간다.
     """
-    aliases = aliases or AliasCache()
-    candidates = model_candidates(model)
     source = build_source(page)
     if not source:
         raise GeminiError("요약할 본문을 찾지 못했습니다")
+    contents = PROMPT.format(name=name, source=source, limit=limit)
+    items, used = run(contents, SCHEMA, list, model=model, client=client,
+                      on_fail=on_fail, on_skip=on_skip, aliases=aliases)
+    kept, dropped = validate(items, page, limit)
+    return kept, dropped, used
+
+
+def run(contents: str, schema: dict, expect, model: str | None = None, client=None,
+        on_fail=None, on_skip=None, aliases: AliasCache | None = None):
+    """모델 목록을 앞에서부터 시도해 (JSON 응답, 실제로 쓴 모델)을 돌려준다."""
+    aliases = aliases or AliasCache()
+    candidates = model_candidates(model)
     if client is None:
         if not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")):
             raise GeminiError("환경 변수 GEMINI_API_KEY가 없습니다")
@@ -250,7 +260,6 @@ def summarize(page, name: str, model: str | None = None, limit: int = 4,
         client = genai.Client()
     from google.genai import types
 
-    contents = PROMPT.format(name=name, source=source, limit=limit)
     errors = []
     failed: set[str] = set()  # 실패한 실제 모델 이름
     for m in candidates:
@@ -260,7 +269,7 @@ def summarize(page, name: str, model: str | None = None, limit: int = 4,
                 on_skip(m, target)
             continue
         try:
-            items, actual = _call(client, m, contents, types)
+            data, actual = _call(client, m, contents, types, schema, expect)
         except Exception as exc:  # API 오류(429, 404 등)나 응답 형식 오류 → 다음 모델
             errors.append(f"{m}: {_short(exc)}")
             failed.update({m, target})
@@ -268,6 +277,5 @@ def summarize(page, name: str, model: str | None = None, limit: int = 4,
                 on_fail(m, _short(exc))
             continue
         aliases.learn(m, actual)
-        kept, dropped = validate(items, page, limit)
-        return kept, dropped, _bare(actual) or m
+        return data, _bare(actual) or m
     raise GeminiError("모든 모델이 실패했습니다 - " + " / ".join(errors))
