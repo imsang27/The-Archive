@@ -59,14 +59,15 @@ CJK = re.compile(r"[\u3040-\u30ff\u4e00-\u9fff]")
 
 
 def aliases(char: Character) -> list[str]:
-    """[풀네임 또는 한국어 약칭, 원어, 영문] 순서."""
+    """[풀네임 또는 한국어 약칭, 영문, 원어] 순서."""
     out: list[str] = []
     names = char.page.names
     # "성 이름" 형식(로마자 이름도 두 단어)일 때만 이름 부분을 약칭으로 쓴다. 예: 스나오오카미 시로코 → 시로코
     latin = names[-1] if names else ""
     family = " " in char.name and len(latin.split()) == len(char.name.split()) == 2
     korean = char.full_name or (char.name.split()[-1] if family else "")
-    for n in ([korean] if korean and korean != char.name else []) + names[:1] + names[-1:]:
+    original, english = (names[0], names[-1]) if len(names) >= 2 else ("", names[0] if names else "")
+    for n in ([korean] if korean and korean != char.name else []) + [english, original]:
         n = n.replace(" ", "") if CJK.search(n) else n  # 한자·가나 이름은 띄어쓰기를 없앤다
         if n and n not in out:
             out.append(n)

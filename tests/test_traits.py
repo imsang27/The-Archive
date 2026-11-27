@@ -63,13 +63,13 @@ class AliasTest(unittest.TestCase):
 
         ba = Page("t", "u", "", "", [], {}, ["砂狼 シロコ", "砂狼 白子", "Sunaookami Shiroko"], [], {})
         self.assertEqual(aliases(Character("스나오오카미 시로코", "블루 아카이브", ba)),
-                         ["시로코", "砂狼シロコ", "Sunaookami Shiroko"])
+                         ["시로코", "Sunaookami Shiroko", "砂狼シロコ"])
         ww = Page("t", "u", "", "", [], {}, ["千咲", "Chisa"], [], {})
         self.assertEqual(aliases(Character("치사", "명조", ww, full_name="쿠치바 치사")),
-                         ["쿠치바 치사", "千咲", "Chisa"])
-        self.assertEqual(aliases(Character("치사", "명조", ww)), ["千咲", "Chisa"])
+                         ["쿠치바 치사", "Chisa", "千咲"])
+        self.assertEqual(aliases(Character("치사", "명조", ww)), ["Chisa", "千咲"])
         hsin = Page("t", "u", "", "", [], {}, ["心", "Hsin"], [], {})  # 띄어쓰기가 있어도 성+이름이 아님
-        self.assertEqual(aliases(Character("여우의 별자리", "명조", hsin)), ["心", "Hsin"])
+        self.assertEqual(aliases(Character("여우의 별자리", "명조", hsin)), ["Hsin", "心"])
 
 
 if __name__ == "__main__":
