@@ -8,7 +8,8 @@ from __future__ import annotations
 import datetime as dt
 import json
 
-from .model import Character, SECTIONS
+from .model import SECTIONS, Character, Source
+from .namu import to_source
 from .works import Work
 
 PROFILE_ORDER = ["이명", "소속 학원", "동아리", "소속", "나이", "성별", "생일", "키", "신장", "출생",
@@ -38,13 +39,33 @@ def _q(s: str) -> str:
     return json.dumps(s, ensure_ascii=False)
 
 
+def choose_core(sources: list[Source], facts) -> int:
+    """Rules.md의 핵심 출처 기준: (1) 원출처(1차) → (2) 가장 많은 줄을 받치는 출처 → (3) 날짜가 있는 출처."""
+    counts = {i: 0 for i in range(len(sources))}
+    counts[0] += 1  # 나무위키는 기본 정보 표를 받친다
+    for f in facts:
+        counts[f.source] = counts.get(f.source, 0) + 1
+    used = [i for i, c in counts.items() if c > 0]
+    return min(used, key=lambda i: (sources[i].grade, -counts[i], 0 if sources[i].date else 1, i))
+
+
 def render(char: Character, work: Work, today: dt.date | None = None) -> str:
     today = today or dt.date.today()
     page = char.page
-    ref_title = f"나무위키 - {page.title}"
-    ref = f"[{ref_title}]({page.url})"
-    r_score, r_note = recency_score(page.source_date, today)
-    s_score, c_score = 20, 10  # 출처: 위키(2차) 하나
+    sources = char.sources or [to_source(page)]
+    used = sorted({0} | {f.source for f in char.facts})
+    core = choose_core(sources, char.facts)
+    order = [core] + [i for i in used if i != core]
+    fn = {src: n for n, src in enumerate(order, 1)}  # 출처 번호 → 각주 번호
+    core_src = sources[core]
+
+    def ref(i: int) -> str:
+        s = sources[i]
+        return f"[{s.label} - {s.title}]({s.url})"
+
+    r_score, r_note = recency_score(core_src.date, today)
+    s_score = 40 if core_src.grade == 1 else 20
+    c_score = 20 if len(used) >= 2 else 10
     confidence = s_score + c_score + r_score
     has_ai = bool(char.author)
 
@@ -56,12 +77,12 @@ def render(char: Character, work: Work, today: dt.date | None = None) -> str:
         _yaml_list("aliases", page.names),
         _yaml_list("tags", [work.tag] + char.tags),
         "Reference:",
-        f"  - {_q(ref)}",
+        *[f"  - {_q(ref(i))}" for i in order],
     ]
     if has_ai:
         fm.append(_yaml_list("Author", char.author))
     fm += [
-        f"Source_date: {page.source_date}",
+        f"Source_date: {core_src.date}".rstrip(),
         "Verified_date:",
         f"Confidence: {confidence}",
     ]
@@ -69,18 +90,22 @@ def render(char: Character, work: Work, today: dt.date | None = None) -> str:
         fm += ["Review_status: 미검토", "Reviewed_date:"]
     fm += [f"작품: {_q(work.link)}", "취향:", "---"]
 
-    rows = [f"| 이름 | {char.name}" + (f" ({', '.join(page.names)})" if page.names else "") + "[^1] |",
-            f"| 작품 | {work.title}[^1] |"]
+    nf = f"[^{fn[0]}]"  # 기본 정보 표는 나무위키가 받친다
+    rows = [f"| 이름 | {char.name}" + (f" ({', '.join(page.names)})" if page.names else "") + f"{nf} |",
+            f"| 작품 | {work.title}{nf} |"]
     for key in PROFILE_ORDER:
         if page.profile.get(key):
-            rows.append(f"| {key} | {page.profile[key]}[^1] |")
+            rows.append(f"| {key} | {page.profile[key]}{nf} |")
     if page.voice_actors:
-        rows.append(f"| 성우 | {', '.join(page.voice_actors)} (나무위키 표기 순)[^1] |")
+        rows.append(f"| 성우 | {', '.join(page.voice_actors)} (나무위키 표기 순){nf} |")
 
     body = ["# 1. 기본 정보", "---", "", "| 항목 | 내용 |", "| :-- | :-- |", *rows, ""]
     for sec in SECTIONS:
-        lines = [f"- {f.text}[^1]" for f in char.facts if f.section == sec]
+        lines = [f"- {f.text}[^{fn[f.source]}]" for f in char.facts if f.section == sec]
         body += [f"# {SECTION_TITLES[sec]}", "---", *(lines or [EMPTY]), ""]
+
+    def tag(i: int) -> str:
+        return "[핵심]" if i == core else "[보조]"
 
     checks = []
     profile_keys = [k for k in PROFILE_ORDER if page.profile.get(k)]
@@ -88,18 +113,25 @@ def render(char: Character, work: Work, today: dt.date | None = None) -> str:
         anchor = next((f"{k}: {page.profile[k]}" for k in profile_keys
                        if f"{k}: {page.profile[k]}" in page.text), None)
         quote = f'"{anchor}"' if anchor else f"검색어: {page.profile[profile_keys[-1]]}"
-        checks.append(f"> - [ ] [핵심] {'·'.join(profile_keys[:6])} (1.)[^1] — {quote}")
-    for f in char.facts:
-        checks.append(f'> - [ ] [핵심] {f.summary} ({SECTION_NUM[f.section]})[^1] — "{f.quote}"')
+        checks.append(f"> - [ ] {tag(0)} {'·'.join(profile_keys[:6])} (1.){nf} — {quote}")
+    facts = sorted(char.facts, key=lambda f: f.source != core)  # 핵심 줄을 먼저
+    for f in facts:
+        checks.append(f'> - [ ] {tag(f.source)} {f.summary} ({SECTION_NUM[f.section]})[^{fn[f.source]}] — "{f.quote}"')
     if checks:
         body += ["> [!check]- 대조 체크리스트", *checks, ""]
 
-    date_note = f" (최근 수정 {page.source_date})" if page.source_date else ""
+    notes = []
+    for i in order:
+        s = sources[i]
+        extra = [x for x in (f"최근 수정 {s.date}" if s.date else "", s.note) if x]
+        notes.append(f"[^{fn[i]}]: {ref(i)}" + (f" ({', '.join(extra)})" if extra else ""))
+    grade_note = (f"핵심 출처가 1차({core_src.label})" if core_src.grade == 1
+                  else "1차 출처 없음, 위키(2차)")
     tail = [
         "---",
-        f"[^1]: {ref}{date_note}",
+        *notes,
         "",
         f"%% Confidence: S={s_score}, V=0, C={c_score}, R={r_score} → {confidence} | "
-        f"S: 위키(2차)만 있음 | C: 출처 1개 (n=1) | R: {r_note} %%",
+        f"S: {grade_note} | C: 줄을 받치는 독립 출처 {len(used)}개 | R: {r_note} %%",
     ]
     return "\n".join(fm + body + tail) + "\n"

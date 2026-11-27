@@ -13,7 +13,8 @@ import json
 import sys
 from pathlib import Path
 
-from . import dotenv, gemini, namu, rules
+from . import bawiki, dotenv, gemini, namu, rules
+from .naver_db import NaverDBError, NaverLoungeDB
 from .model import Character
 from .render import render
 from .works import WORKS, get_work
@@ -33,10 +34,40 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cache", default=".cache/namu", help="HTML 캐시 폴더")
     p.add_argument("--refresh", action="store_true", help="캐시를 무시하고 다시 받기")
     p.add_argument("--today", help="신뢰도 R 계산 기준 날짜 (YYYY-MM-DD)")
+    p.add_argument("--no-extra", action="store_true",
+                   help="나무위키만 쓰기 (네이버 라운지 DB, Blue Archive Wiki를 쓰지 않음)")
+    p.add_argument("--no-browser", action="store_true",
+                   help="브라우저(Playwright)가 필요한 출처(네이버 라운지 DB)를 쓰지 않음")
     return p
 
 
-def run_one(name: str, args, work, out: Path, today: dt.date) -> bool:
+def collect_extra(name: str, page, args, work, lounge_db) -> list:
+    """나무위키 말고 추가 출처를 모은다. 실패해도 나무위키만으로 계속한다."""
+    extra = []
+    if args.no_extra:
+        return extra
+    if lounge_db is not None:
+        try:
+            src = lounge_db.source(name, page.names + [page.title])
+            if src:
+                extra.append(src)
+            else:
+                print(f"[알림] {name}: 네이버 라운지 DB에 없음", file=sys.stderr)
+        except NaverDBError as exc:
+            print(f"[알림] {name}: 네이버 라운지 DB를 읽지 못함 ({exc})", file=sys.stderr)
+    if work.bawiki:
+        try:
+            src = bawiki.fetch(page.names)
+            if src:
+                extra.append(src)
+            else:
+                print(f"[알림] {name}: Blue Archive Wiki 문서를 찾지 못함", file=sys.stderr)
+        except bawiki.BAWikiError as exc:
+            print(f"[알림] {name}: Blue Archive Wiki를 읽지 못함 ({exc})", file=sys.stderr)
+    return extra
+
+
+def run_one(name: str, args, work, out: Path, today: dt.date, lounge_db=None) -> bool:
     try:
         page = namu.find_page(name, work, Path(args.cache), args.refresh)
     except namu.FetchError as exc:
@@ -44,6 +75,7 @@ def run_one(name: str, args, work, out: Path, today: dt.date) -> bool:
         return False
 
     char = Character(name=name, work=work.title, page=page)
+    char.sources = [namu.to_source(page)] + collect_extra(name, page, args, work, lounge_db)
     if args.llm == "gemini":
         try:
             def report(model_name, err):
@@ -53,7 +85,7 @@ def run_one(name: str, args, work, out: Path, today: dt.date) -> bool:
                 print(f"[알림] {name}: {model_name} 건너뜀 (실패한 별칭과 같은 모델 {target})", file=sys.stderr)
 
             aliases = gemini.AliasCache(Path(args.cache).parent / "gemini_aliases.json", today)
-            facts, dropped, model = gemini.summarize(page, name, model=args.model, on_fail=report,
+            facts, dropped, model = gemini.summarize(char.sources, name, model=args.model, on_fail=report,
                                                      on_skip=skipped, aliases=aliases)
             char.facts = facts
             char.author = [f"Gemini ({model})"]
@@ -63,6 +95,10 @@ def run_one(name: str, args, work, out: Path, today: dt.date) -> bool:
             print(f"[알림] {name}: Gemini 요약 실패 → 규칙 기반으로 진행 ({exc})", file=sys.stderr)
     if not char.facts:
         char.facts = rules.extract(page)
+        official = []
+        for i, src in enumerate(char.sources[1:], 1):
+            official += rules.extract_official(src, i)
+        char.facts = rules.dedupe(official + char.facts)  # 같은 문장은 추가 출처(공식) 쪽을 남긴다
 
     md = render(char, work, today)
     if args.dry_run:
@@ -77,7 +113,8 @@ def run_one(name: str, args, work, out: Path, today: dt.date) -> bool:
     if args.json:
         (out / f"{name}.json").write_text(
             json.dumps(char.to_json(), ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"[저장] {path} (줄 {len(char.facts)}개, 출처 {page.url})")
+    labels = ", ".join(s.label for s in char.sources)
+    print(f"[저장] {path} (줄 {len(char.facts)}개, 출처: {labels})")
     return True
 
 
@@ -93,5 +130,11 @@ def main(argv: list[str] | None = None) -> int:
         print(exc.args[0], file=sys.stderr)
         return 2
     today = dt.date.fromisoformat(args.today) if args.today else dt.date.today()
-    ok = [run_one(n, args, work, Path(args.out), today) for n in args.names]
+    use_lounge = work.lounge and not (args.no_extra or args.no_browser)
+    lounge_db = NaverLoungeDB(work.lounge, Path(args.cache).parent) if use_lounge else None
+    try:
+        ok = [run_one(n, args, work, Path(args.out), today, lounge_db) for n in args.names]
+    finally:
+        if lounge_db is not None:
+            lounge_db.close()
     return 0 if all(ok) else 1

@@ -12,7 +12,7 @@ import os
 import re
 from pathlib import Path
 
-from .model import SECTIONS, Fact, Page
+from .model import SECTIONS, Fact, Page, Source
 
 DEFAULT_MODEL = "gemini-flash-latest"
 
@@ -39,22 +39,23 @@ MAX_SOURCE_CHARS = 40000
 # "정보" 섹션에서 이 줄부터는 캐릭터 스토리(소설 같은 서술)라서 뺀다
 STORY_MARKERS = ("캐릭터 스토리", "[ 캐릭터 스토리")
 
-PROMPT = """너는 캐릭터 기록을 정리하는 아키비스트다. 아래 [출처]는 나무위키 문서 "{title}"의 일부다.
+PROMPT = """너는 캐릭터 기록을 정리하는 아키비스트다. 아래 [출처 N]들은 캐릭터 "{name}"에 관한 자료다.
 캐릭터 "{name}"의 성격, 외형, 기타 특징을 한국어로 정리하라.
 
 규칙:
 - [출처]에 있는 내용만 쓴다. 출처에 없는 지식, 추측, 평가를 더하지 않는다.
-- 각 항목은 한 문장, "~다."로 끝나는 평서문으로 쓴다.
+- 각 항목은 한 문장, "~다."로 끝나는 평서문으로 쓴다. 출처가 외국어여도 노트 문장은 한국어로 쓴다.
 - section은 "성격", "외형", "기타" 중 하나다. 각 section은 최대 {limit}개.
-- summary는 대조 체크리스트용 15자 안팎의 짧은 요약이다.
-- quote는 그 문장의 근거가 되는 [출처] 원문을 한 글자도 바꾸지 않고 그대로 옮긴 조각이다.
+- summary는 대조 체크리스트용 15자 안팎의 짧은 한국어 요약이다.
+- source는 그 문장의 근거가 된 [출처 N]의 번호 N이다.
+- quote는 그 [출처 N] 원문을 한 글자도 바꾸지 않고 그대로 옮긴 조각이다 (번역하지 않는다).
   8~60자, 각주 번호([1] 등)와 따옴표가 들어간 부분은 피한다.
+- 같은 내용이 여러 출처에 있으면 (공식)이라고 표시된 출처를 source로 쓴다.
 - "외형"에는 머리카락, 눈, 체형, 복장, 장신구, 성흔처럼 눈에 보이는 모습만 넣는다.
   성격이나 행동을 말하는 문장은 외형이 아니다.
 - "{name}" 본인에 대한 서술만 쓴다. 다른 인물을 묘사하는 문장이나 대사는 쓰지 않는다.
 - 줄거리 스포일러, 게임 성능·수치, 밈은 넣지 않는다.
 
-[출처]
 {source}
 """
 
@@ -66,9 +67,10 @@ SCHEMA = {
             "section": {"type": "string", "enum": list(SECTIONS)},
             "text": {"type": "string"},
             "summary": {"type": "string"},
+            "source": {"type": "integer"},
             "quote": {"type": "string"},
         },
-        "required": ["section", "text", "summary", "quote"],
+        "required": ["section", "text", "summary", "source", "quote"],
     },
 }
 
@@ -84,38 +86,74 @@ def _section_text(name: str, lines: list[str]) -> str:
     return "\n".join(lines)[:MAX_SECTION_CHARS]
 
 
-def build_source(page: Page) -> str:
+def _source_body(src: Source) -> str:
     parts = []
-    for name in SOURCE_SECTIONS:
-        lines = page.sections.get(name)
+    names = SOURCE_SECTIONS if src.key == "namu" else list(src.sections)
+    for name in names:
+        lines = src.sections.get(name)
         if lines:
             text = _section_text(name, lines)
             if text.strip():
                 parts.append(f"## {name}\n{text}")
-    return "\n\n".join(parts)[:MAX_SOURCE_CHARS]
+    return "\n\n".join(parts)
+
+
+def build_source(sources) -> str:
+    """여러 출처를 [출처 N] 머리말을 붙여 하나의 글로 만든다. Page 하나만 줘도 된다."""
+    sources = _as_sources(sources)
+    blocks, total = [], 0
+    for i, src in enumerate(sources, 1):
+        body = _source_body(src)
+        if not body:
+            continue
+        mark = " (공식)" if src.grade == 1 else ""
+        block = f"[출처 {i}{mark}] {src.label} - {src.title}\n{body}"
+        block = block[: max(0, MAX_SOURCE_CHARS - total)]
+        if block:
+            blocks.append(block)
+            total += len(block)
+    return "\n\n".join(blocks)
+
+
+def _as_sources(sources) -> list[Source]:
+    if isinstance(sources, Page):
+        from .namu import to_source
+
+        return [to_source(sources)]
+    return list(sources)
 
 
 def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
-def validate(items: list[dict], page: Page, limit: int) -> tuple[list[Fact], list[dict]]:
-    """인용이 페이지에 그대로 있는 항목만 남긴다. (남긴 것, 버린 것)"""
-    text = _norm(page.text)
+def validate(items: list[dict], sources, limit: int) -> tuple[list[Fact], list[dict]]:
+    """인용이 해당 출처에 그대로 있는 항목만 남긴다. (남긴 것, 버린 것)
+
+    AI가 출처 번호를 잘못 적었어도, 인용이 다른 출처에 그대로 있으면 그 출처로 고쳐서 남긴다.
+    """
+    sources = _as_sources(sources)
+    texts = [_norm(s.text) for s in sources]
     kept: list[Fact] = []
     dropped: list[dict] = []
     count = {s: 0 for s in SECTIONS}
     for it in items:
         sec = it.get("section")
-        quote = _norm(it.get("quote", "")).strip("\"'“”")
-        body = _norm(it.get("text", ""))
-        if sec not in count or not body or len(quote) < 8 or quote not in text:
+        quote = _norm(str(it.get("quote", ""))).strip("\"'“”")
+        body = _norm(str(it.get("text", "")))
+        try:
+            idx = int(it.get("source", 1)) - 1
+        except (TypeError, ValueError):
+            idx = 0
+        if not (0 <= idx < len(texts)) or quote not in texts[idx]:
+            idx = next((i for i, t in enumerate(texts) if quote and quote in t), -1)
+        if sec not in count or not body or len(quote) < 8 or idx < 0:
             dropped.append(it)
             continue
         if count[sec] >= limit:
             continue
         count[sec] += 1
-        kept.append(Fact(sec, body, _norm(it.get("summary", "")) or body[:20], quote))
+        kept.append(Fact(sec, body, _norm(str(it.get("summary", ""))) or body[:20], quote, idx))
     return kept, dropped
 
 
@@ -189,7 +227,7 @@ def _short(exc: Exception) -> str:
     return " ".join(str(exc).split())[:120]
 
 
-def summarize(page: Page, name: str, model: str | None = None, limit: int = 4,
+def summarize(page, name: str, model: str | None = None, limit: int = 4,
               client=None, on_fail=None, on_skip=None,
               aliases: AliasCache | None = None) -> tuple[list[Fact], list[dict], str]:
     """(남긴 줄, 버린 항목, 실제로 쓴 모델)을 돌려준다.
@@ -212,7 +250,7 @@ def summarize(page: Page, name: str, model: str | None = None, limit: int = 4,
         client = genai.Client()
     from google.genai import types
 
-    contents = PROMPT.format(title=page.title, name=name, source=source, limit=limit)
+    contents = PROMPT.format(name=name, source=source, limit=limit)
     errors = []
     failed: set[str] = set()  # 실패한 실제 모델 이름
     for m in candidates:

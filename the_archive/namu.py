@@ -9,7 +9,7 @@ import time
 import urllib.parse
 from pathlib import Path
 
-from .model import Page
+from .model import Page, Source
 from .works import Work
 
 BASE = "https://namu.wiki/w/"
@@ -190,3 +190,9 @@ def find_page(name: str, work: Work, cache_dir: Path | None = None, refresh: boo
             return page
         errors.append(f"{title}: {work.title} 문서가 아닙니다")
     raise FetchError("; ".join(errors))
+
+
+def to_source(page: Page) -> Source:
+    """나무위키 문서를 출처 목록에 넣을 형태로 바꾼다."""
+    return Source(key="namu", label="나무위키", title=page.title, url=page.url, date=page.source_date,
+                  grade=2, text=page.text, sections=page.sections)
