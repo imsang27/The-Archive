@@ -13,18 +13,20 @@ class Work:
     keyword: str  # 문서가 이 작품의 문서인지 확인할 때 찾을 단어
     tag: str  # 노트 태그
     link: str  # Preference 노트의 작품 헤딩 링크
+    lounge: str = ""  # 네이버 게임 라운지 이름 (DB에서 공식 소개문을 가져옴)
+    bawiki: bool = False  # Blue Archive Wiki를 출처로 쓸지
 
 
 WORKS = {
     w.key: w
     for w in [
         Work("블루 아카이브", "블루 아카이브", "블루 아카이브", "블루 아카이브",
-             "캐릭터/블루_아카이브", "[[Preference#1. Blue Archive]]"),
+             "캐릭터/블루_아카이브", "[[Preference#1. Blue Archive]]", lounge="Blue_Archive", bawiki=True),
         Work("원신", "원신", "원신", "원신", "캐릭터/원신", "[[Preference#2. Genshin Impact]]"),
         Work("스타레일", "붕괴: 스타레일", "붕괴: 스타레일", "스타레일",
              "캐릭터/붕괴_스타레일", "[[Preference#3. Honkai: StarRail]]"),
         Work("명조", "명조: 워더링 웨이브", "명조: 워더링 웨이브", "명조",
-             "캐릭터/명조", "[[Preference#4. Wuthering Waves]]"),
+             "캐릭터/명조", "[[Preference#4. Wuthering Waves]]", lounge="WutheringWaves"),
         Work("니케", "승리의 여신: 니케", "승리의 여신: 니케", "니케",
              "캐릭터/니케", "[[Preference#5. GODDESS OF VICTORY: NIKKE]]"),
     ]

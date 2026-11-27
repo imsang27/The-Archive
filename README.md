@@ -135,6 +135,8 @@ The-Archive/
 ├── the_archive/
 │   ├── cli.py            # 명령줄 인터페이스
 │   ├── namu.py           # 나무위키 문서 수집, 프로필·섹션 파싱, 캐시
+│   ├── naver_db.py       # 네이버 게임 라운지 DB의 공식 소개문 (Playwright + 설치된 Chrome)
+│   ├── bawiki.py         # Blue Archive Wiki (영문, MediaWiki API)
 │   ├── rules.py          # 규칙 기반 추출 (출처 문장을 그대로 사용)
 │   ├── gemini.py         # Gemini 요약 + 인용 검증
 │   ├── render.py         # Obsidian 노트(Markdown) 만들기
@@ -146,6 +148,22 @@ The-Archive/
 ├── .env.example          # API 키 설정 예시 (.env로 복사해서 사용)
 └── README.md
 ```
+
+---
+
+## 📚 출처
+
+| 작품 | 출처 | 등급 | 비고 |
+| :-- | :-- | :-- | :-- |
+| 공통 | 나무위키 | 2차 | 기본 정보 표, 성격·외형·여담 |
+| 명조 | 네이버 게임 **공식** 라운지 DB | **1차** | 게임사가 운영하는 공식 라운지의 공식 소개문 (〈유니버스 인류 기록〉) |
+| 블루 아카이브 | 네이버 게임 라운지 DB | 2차 | 한국어 공식 소개문 (공식 라운지가 아니라 2차로 계산, 등록된 학생만) |
+| 블루 아카이브 | Blue Archive Wiki (영문) | 2차 | 게임 내 공식 소개문(영문), 관계 |
+
+- 네이버 라운지 DB는 자바스크립트로 그려지는 페이지라 **Playwright**로 설치된 Chrome을 띄워 읽습니다 (`pip install playwright`, 별도 브라우저 다운로드 없음). 로그인은 필요 없습니다.
+- 수집 범위는 robots.txt가 허용하는 곳만 씁니다. 라운지 댓글(apis.naver.com)과 X(트위터)는 자동 수집이 금지되어 쓰지 않습니다.
+- 노트의 각 줄에는 그 줄을 받치는 출처의 각주가 붙고, 핵심 출처는 Rules.md 기준(1차 → 많이 받치는 출처 → 날짜)으로 고릅니다.
+- `--no-browser`: 라운지 DB를 건너뜀, `--no-extra`: 나무위키만 사용
 
 ---
 

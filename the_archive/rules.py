@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 
-from .model import Fact, Page
+from .model import Fact, Page, Source
 
 INTRO_SECTIONS = ("개요", "인물 소개", "공식 소개", "캐릭터성")
 TRIVIA_SECTIONS = ("여담", "기타", "캐릭터성", "디자인")
@@ -97,3 +97,47 @@ def extract(page: Page, limit_per_section: int = 4) -> list[Fact]:
         if n < limit_per_section and add("기타", s):
             n += 1
     return facts
+
+
+OFFICIAL_SKIP = re.compile(r"^〈|^[\"“「]|>>\s*$|^[-─—]+")
+HANGUL = re.compile(r"[가-힣]")
+
+
+def extract_official(src: Source, index: int, limit: int = 3) -> list[Fact]:
+    """공식 소개문 같은 추가 출처에서 한국어 문장 몇 개를 원문 그대로 고른다.
+
+    외국어 출처(예: 영문 위키)는 규칙 기반으로는 번역할 수 없으므로 고르지 않는다.
+    """
+    facts: list[Fact] = []
+    for lines in src.sections.values():
+        for line in lines:
+            line = re.sub(r"^[◆]?[가-힣]+>>\s*", "", line.strip())  # "아카이브>>" 같은 머리말
+            if not line or OFFICIAL_SKIP.search(line) or not HANGUL.search(line):
+                continue
+            for sentence in _sentences(line):
+                if len(facts) >= limit or len(sentence) < 12:
+                    continue
+                quote = make_quote(sentence, src.text)
+                if len(quote) < 8:
+                    continue
+                section = "성격" if PERSONALITY.search(sentence) else "기타"
+                text = sentence if sentence.endswith(".") else sentence + "."
+                facts.append(Fact(section, text, _summary(sentence), quote, index))
+    return facts
+
+
+def _key(text: str) -> str:
+    return re.sub(r"[\s.,·]", "", text)
+
+
+def dedupe(facts: list[Fact]) -> list[Fact]:
+    """띄어쓰기·문장부호만 다른 같은 문장은 먼저 나온 것 하나만 남긴다."""
+    seen: set[str] = set()
+    out = []
+    for f in facts:
+        k = _key(f.text)
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(f)
+    return out
